@@ -1,0 +1,991 @@
+---
+title: "Beliefs of the Nones Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(VGAM)
+library(ggplot2)
+library(stargazer)
+library(survey)
+library(nnet)
+source("useful_functions.R")
+load("output/gss_relig.RData")
+```
+
+```{r limit_relig, eval=FALSE, echo=FALSE}
+#turn EVAL to FALSE to use whole sample, otherwise just comparing christians to nones
+#gss <- subset(gss, relig=="protestant" | relig=="catholic" | relig=="none")
+```
+
+## Overview of None Trend
+
+Lets just review the overall trend of more people claiming no religious affiliation in the GSS.
+
+```{r none_trend, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Percentage of respondents in the GSS with no religious affiliation. Smoothed (LOWESS) trend shown in grey. All percentages are sample weighted."}
+temp <- as.data.frame.table(prop.table(xtabs(wtssall~year+nones, data=gss),1))
+temp$year <- as.numeric(as.character(temp$year))
+temp$Percent <- temp$Freq*100
+ggplot(subset(temp, nones=="None"), aes(x=year, y=Percent))+
+  geom_point()+
+  geom_smooth(se=FALSE, span=0.7, colour="grey70")+
+  theme_bw()+
+  ylab("Percent with no religious affiliation")
+```
+
+## Overview of Trends in Beliefs and Practices
+
+To get a general overview of the trend, I will start by just crudely treating the ordinal responses as a quantitative variable with the assumption of equal (linear) differences between each category on the scale. I will scale each of these variables to have a minimum of 0 and a maximum of 1. The four variables I will look at are:
+
+- Belief in god (6 categories)
+- Belief in afterlife (2 categories, yes/no)
+- Prayer frequency (5 categories). Because the never category increases dramatically and suddenly after 2000, I combine it and the "less than once a week" option for consistency across time.
+- Attendance frequency (9 categories).
+
+Note that because the afterlife question is binary, the scale I create for this variable is just equivalent to the proportion who said yes. 
+
+```{r create_simple_scale, echo=FALSE}
+gss$god_scale <- (as.numeric(gss$god)-1)/5
+gss$postlife_scale <- as.numeric(gss$postlife=="yes")
+gss$prayer_scale <- (as.numeric(gss$pray)-1)/4
+gss$attend_scale <- (as.numeric(gss$attend)-1)/8
+```
+
+I then calculate the sample-weighted means by affiliation (None/Religious) and year and plot these in the figure below. I add two trends lines to these plots. The first uses a LOWESS smoothing. The second uses a regression spline with a hinge at 2000. This regression spline is used for both the religious and none trend lines. I chose 2000 based on a graphically "eyeballing" of the initial plots. I also add a LOWESS smoothed trend line for all respondents to see the global trend. 
+
+```{r simple_scale_figure, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Trends in religious beliefs and practices among the religiously affiliated and the unaffiliated. All ordinal questions are treated as a linear quantitative scale with a maximum of one and a minimum of zero. Smoothed (LOWESS) trend lines for each group are shown in light gray lines. The fit of a regression spline model with a hinge at year 2000 is shown in dark grey. Overall smoothed (LOWESS) trend among all respondents is shown by dashed line."}
+#define a handy little function for calculating the weighted means by year and affiliation
+wmean_year_affiliation <- function(varname, dataset=gss) {
+  outcome <- na.omit(dataset[,varname])
+  wmeans <- with(subset(dataset, !is.na(dataset[,varname])), {
+       as.data.frame.table(tapply(outcome*wtssall, 
+                                            list(year, nones), sum, na.rm=TRUE)/
+                                       tapply(wtssall, 
+                                              list(year, nones), sum, na.rm=TRUE))
+    })
+  colnames(wmeans) <- c("Year","Affiliation","Mean")
+  wmeans$Year <- as.numeric(as.character(wmeans$Year))
+  return(wmeans)
+}
+
+trends <- rbind(cbind(wmean_year_affiliation("god_scale"), response="Belief in god"),
+              cbind(wmean_year_affiliation("postlife_scale"), response="Belief in afterlife"),
+              cbind(wmean_year_affiliation("prayer_scale"), response="Prayer frequency"),
+              cbind(wmean_year_affiliation("attend_scale"), response="Attendance frequency"))
+
+trends$response <- factor(trends$response, 
+                        levels=c("Belief in god","Belief in afterlife",
+                                 "Prayer frequency", "Attendance frequency"))
+
+#now build the models for the prediction
+spline.cutpoint <- 2000
+gss$year.centered <- gss$year-spline.cutpoint
+gss$year.spline <- ifelse(gss$year.centered<0, 0, gss$year.centered)
+
+linear_models <- lapply(list(gss$god_scale, gss$postlife_scale, gss$prayer_scale, gss$attend_scale),
+       function(dv) {
+         list(
+           lm(dv~year.centered, data=gss, weights=wtssall),
+           lm(dv~year.centered+nones, data=gss, weights=wtssall),
+           lm(dv~year.centered*nones, data=gss, weights=wtssall),
+           lm(dv~(year.centered+year.spline)*nones, data=gss, weights=wtssall)
+         )
+       })
+
+data.predict <- data.frame(year=rep(1972:2016,2), 
+                           nones=rep(c("None","Religious"), each=length(1972:2016)))
+data.predict$year.centered <- data.predict$year-spline.cutpoint
+data.predict$year.spline <- ifelse(data.predict$year.centered<0, 0, data.predict$year.centered)
+
+
+predictions <- rbind(
+  with(subset(data.predict, year>=1988), data.frame(Year=year,
+                                                    Affiliation=nones,
+                                                    response="Belief in god",
+                                                    Mean=predict(linear_models[[1]][[4]],
+                                                                 subset(data.predict, year>=1988)))),
+  data.frame(Year=data.predict$year, Affiliation=data.predict$nones,
+             response="Belief in afterlife",
+             Mean=predict(linear_models[[2]][[4]], data.predict)),
+  with(subset(data.predict, year>=1983), data.frame(Year=year, Affiliation=nones,
+                                                    response="Prayer frequency",
+                                                    Mean=predict(linear_models[[3]][[4]],
+                                                                 subset(data.predict, year>=1983)))),
+  data.frame(Year=data.predict$year, Affiliation=data.predict$nones,
+             response="Attendance frequency",
+             Mean=predict(linear_models[[4]][[4]], data.predict))
+  )
+predictions$response <- factor(predictions$response, 
+                        levels=c("Belief in god","Belief in afterlife",
+                                 "Prayer frequency", "Attendance frequency"))
+
+#get trend across all affiliations
+wmean_year <- function(varname, dataset=gss) {
+  outcome <- na.omit(dataset[,varname])
+  wmeans <- with(subset(dataset, !is.na(dataset[,varname])), {
+       as.data.frame.table(tapply(outcome*wtssall, 
+                                            list(year), sum, na.rm=TRUE)/
+                                       tapply(wtssall, 
+                                              list(year), sum, na.rm=TRUE))
+    })
+  colnames(wmeans) <- c("Year","Mean")
+  wmeans$Year <- as.numeric(as.character(wmeans$Year))
+  return(wmeans)
+}
+
+global_trend <- rbind(cbind(wmean_year("god_scale"), response="Belief in god"),
+              cbind(wmean_year("postlife_scale"), response="Belief in afterlife"),
+              cbind(wmean_year("prayer_scale"), response="Prayer frequency"),
+              cbind(wmean_year("attend_scale"), response="Attendance frequency"))
+
+global_trend$response <- factor(global_trend$response, 
+                        levels=c("Belief in god","Belief in afterlife",
+                                 "Prayer frequency", "Attendance frequency"))
+#global_trend$Affiliation <- "Global"
+
+#make figure
+ggplot(trends, aes(x=Year, y=Mean))+
+  facet_grid(.~response)+
+  geom_smooth(se=FALSE, linetype=1,alpha=0.7,
+              aes(group=Affiliation, colour=Affiliation))+
+  geom_line(data=predictions, 
+            aes(group=Affiliation), colour="grey40", alpha=1, size=1)+
+  geom_smooth(data=global_trend, se=FALSE, colour="red", linetype=5)+
+  geom_vline(aes(xintercept=2000), linetype=3)+
+  geom_point(alpha=0.5, aes(shape=Affiliation, colour=Affiliation))+
+  theme_bw()+
+  theme(legend.position = "bottom")+
+  #scale_color_brewer(palette = "Set1")+
+  scale_y_continuous("Mean based on linear scaling of ordinal variables",limit=c(0,1))+
+  scale_color_brewer(palette = "Dark2")
+```
+
+Several things stand out to me in this figure. 
+
+- One of these (attendance) is not like the others. Nothing much is happening with attendance except for a slight narrowing of the gap between the religiously-affiliated and the nones. However, attendance remains very low for the nones. The overall trend in attendance is a much sharper negative because of the growth of the nones. 
+- For the other three effects, up until 2000 there does seem to be a clear *diluting* effect of the growth of the nones. H&F would predict that because this growth was mainly among the "unchurched believers" that this should dilute the more secular perspectives of the nones and make the nones more like the affiliated. That is what we see: a steeper positive slope for the nones that is leading to some convergence in beliefs and prayer frequency. This is exactly what H&F thought was going on and they had empirical evidence of in their 2002 article. 
+- This shifts dramatically circa 2000, which is around the time that H&F's initial 2002 analysis was censored. At this point, the religiously-affiliated and the nones begin to diverge in their beliefs and prayer frequency. In the case of beliefs, this is because nones become less believing over time, while the religiously affiliated believe about the same (in god) or more (in the afterlife). In the case of prayer, this is because nones flatline after 2000, while prayer frequency among the religiously-affiliated continues to rise. 
+- The overall trend after 2000 for all three of these outcomes is somewhat misleading because it is canceling out these diverging patterns for the religiously affiliated and then nones. This is why looking at the overall numbers from H&F 2014 missed what was going on underneath the hood. 
+    - For belief in god, the sharp overall downward trend is driven by the increasing share of nones in the population and the downward trend among nones. Among the religiously-affiliated, there does not appear to have been much change. 
+    - For belief in the afterlife, the overall trend has been generally positive but has leveled off post-2000. It may have even gone negative recently. This effect is entirely driven by the increasing share of the nones in the population and the downward trend since 2000 among nones. Among the religiously-affiliated, the trend has been positive and fairly linear throughout the time period.
+    - For prayer frequency, the overall trend has been relatively flat. This has hidden the fact that prayer frequency has been increasing throughout the time period for the religiously affiliated. 
+
+To test these patterns out more formally, I fit a series of regression models. For each outcome, I fit the following four models:
+
+1) A model with a simple linear year trend (centered on 2000). This gives the rough linear trend in the outcome for all respondents over the whole time period.
+2) A model with a simple linear time trend and a dummy variable for no affiliation. This model allows me to see how the rise of the nones affected the overall time trend from model (1). 
+3) Adds to model (2) an interaction between the linear time trend and the no affiliation dummy variable. This allows for a different linear trend for the religiously affiliated and the nones. However, it doesn't account for the non-linearity in the time trend for nones. 
+4) This model builds on model (3) by adding a spline effect (hinge at 2000) and an interaction between the spline efect and no affiliation. This is the model that is shown in the figure above for the regression spline fit. This allows for a non-linear time trend that "bends" around the year 2000 (i.e. a "broken arrow") for both the religiosly affiliated and the nones. 
+
+The results for these models are shown in the tables below. 
+
+```{r simple_scale_models, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+#spit out regression tables
+stargazer(linear_models[[1]], keep.stat=c("n","rsq"), type="html",
+          covariate.labels = c("Calendar year","Year spline (>2000)",
+                               "No religious affiliation", 
+                               "Year x No religious affiliation",
+                               "Year spline x No religious affiliation"),
+          digits=4,
+          star.cutoffs=c(0.05,0.01,0.001),
+          dep.var.labels.include = FALSE,
+          dep.var.caption = "Strength of belief in god",
+          title="Linear regression models predicting strength of belief in god")
+
+stargazer(linear_models[[2]], keep.stat=c("n","rsq"), type="html",
+          covariate.labels = c("Calendar year","Year spline (>2000)",
+                               "No religious affiliation", 
+                               "Year x No religious affiliation",
+                               "Year spline x No religious affiliation"),
+          digits=4,
+          star.cutoffs=c(0.05,0.01,0.001),
+          dep.var.labels.include = FALSE,
+          dep.var.caption = "Strength of belief in afterlife",
+          title="Linear regression models predicting strength of belief in afterlife")
+
+stargazer(linear_models[[3]], keep.stat=c("n","rsq"), type="html",
+          covariate.labels = c("Calendar year","Year spline (>2000)",
+                               "No religious affiliation", 
+                               "Year x No religious affiliation",
+                               "Year spline x No religious affiliation"),
+          digits=4,
+          star.cutoffs=c(0.05,0.01,0.001),
+          dep.var.labels.include = FALSE,
+          dep.var.caption = "Frequency of prayer",
+          title="Linear regression models predicting frequency of prayer")
+
+stargazer(linear_models[[4]], keep.stat=c("n","rsq"), type="html",
+          covariate.labels = c("Calendar year","Year spline (>2000)",
+                               "No religious affiliation", 
+                               "Year x No religious affiliation",
+                               "Year spline x No religious affiliation"),
+          digits=4,
+          star.cutoffs=c(0.05,0.01,0.001),
+          dep.var.labels.include = FALSE,
+          dep.var.caption = "Frequency of attendance",
+          title="Linear regression models predicting frequency of attendance")
+```
+
+Here are my takeaways from these models: 
+
+- As expected the attendance frequency model does not look like the others. There has been a slight negative trend for the religiously affiliated and a positive trend for the nones, so the two groups are getting more similar over time, although the distance remains great at the end. 
+- For all four models, controlling for the nones in model 2 has a big effect on the global linear time trend. For belief in god and attendance frequency it largely erases the negative time trend with more or less no change or slight declines. For belief in the afterlife and prayer frequency, it reveals a strong positive relationship that was either weaker or non-existent in model 1. 
+- For the religiously affiliated, the positive year trend for the two belief variables seems to have diminished after 2000, and may have even reversed direction for belief in god. For prayer the opposite may have happened although the result is not statistically significant. However, these shifts are minor in comparison to the shifts for the nones after 2000. 
+- For the nones, all outcomes except attendance reveal a significant downward shift after 2000 as evidenced by the interaction between no religious affiliation and the spline. When fit as a simple linear trend, only the belief in god produces a statistically significant downward trend. The other two outcomes have the effets washed out by the positive trend before 2000 and the negative trend after 2000. 
+- For the nones, the greater positive trend before 2000 does seem to be real as evidenced by the interaction between year and nones in model (4). This effect is only stat insignificant for belief in god, but that probably is because there is a shorter time span for measuring this effect pre-2000.
+
+Overall, the formal models are consistent with the conclusions from the graphical analysis. In what follows, I dig into more details on each of the three outcomes where a clear shift happened after 2000.
+
+## Belief in God
+
+To begin, lets look at the trend across all six categories for the religiously affiliated and the nones. Because this will get very noisy with lots of points, I will just show LOWESS-smoothed lines for all trends. 
+
+```{r belief_full_figure, echo=FALSE, message=FALSE, warning=FALSE}
+temp <- na.omit(as.data.frame.table(prop.table(xtabs(wtssall~god+year+nones,
+                                                     data=gss),c(2,3))))
+colnames(temp) <- c("Belief","Year","Affiliation","Percent")
+temp$Year <- as.numeric(as.character(temp$Year))
+temp$Percent <- 100*temp$Percent
+ggplot(temp, aes(x=Year, y=Percent, group=Belief, colour=Belief))+
+  geom_smooth(se=FALSE, span=0.75)+
+  facet_grid(.~Affiliation)+
+  geom_vline(aes(xintercept=2000), linetype=3)+
+  geom_point(alpha=0.5)+
+  theme_bw()+
+  scale_color_manual(values=c("firebrick4","firebrick1","orange","skyblue1","skyblue4","blue"))
+  #scale_color_brewer(palette = "Set1")
+```
+
+The results for the affiliated are pretty clear - there is not much change over time. The only notable change is prehaps a slight decline in more recent years and an uptick in people who believe in a "higher power." 
+
+The results get a bit noisy for the nones, as one would expect given the smaller sample sizes. Still I note a couple of interesting things. First, the agnostic and aethist smoothed lines are almost mirror images of one another - when one is increasing the other is decreasing. As a result when you add them up there isn't much change over time, but this might be deceiving. Overall, before 2000, the agnostic response was on the decline and the aethist on the rise. This switched after 2000, but now may be turning around again with a noticeable uptick in the aethist category since 2010 and a leveling off of the agnostic response. Second, before 2000, the most confident category of belief in god actually increase the most while the other two categories declined (believe sometimes) or were stationary. In combination with the pattern for aethist responses, this suggests greater polarization before 2000. Since 2000, all of the believer categories have been on the decline, while higher power has increased substantially. Overall, "spiritual but not religious" (higher power) and agnostic responses are the two most common responses throughout most of the time period, except for the period in which those who "know god exists" rose. 
+
+It will be very difficult to fit a model to all six categories and get anything meaningful, but lets go ahead and try a cumulative logit model with the assumption of parallel effects to see how well it does. 
+
+```{r belief_models_allcat, echo=FALSE, results='asis'}
+model.belief.linear.sixcat <- vglm(cbind(gss$god=="dont believe", 
+                                         gss$god=="no way to find out",
+                                         gss$god=="some higher power",
+                                         gss$god=="believe sometimes",
+                                         gss$god=="believe but doubts",
+                                         gss$god=="know god exists")~nones*year.centered, 
+                                   data=gss, weights = wtssall, 
+                                   family=cumulative(reverse=TRUE, parallel=TRUE))
+model.belief.spline.sixcat <- update(model.belief.linear.sixcat,
+                                     .~.+nones*year.spline)
+vglm.stargazer(list(model.belief.linear.sixcat, model.belief.spline.sixcat),
+               sg.type="html", ncat=6,
+               sg.title="Cumulative logit models with parallel effects predicting belief in god using all six categories")
+```
+
+How well does it fit the trends for the nones? 
+
+```{r belief_fit_allcat, echo=FALSE}
+temp <- subset(data.predict, year>=1988)
+probs <- get.fitted.probs(model.belief.linear.sixcat, temp,
+                          outcome.names = c("dont believe","no way to find out",
+                                            "some higher power", "believe sometimes",
+                                            "believe but doubts","know god exists"))
+predicted.linear <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.linear) <- c("Year","Affiliation","Belief","Percent")
+probs <- get.fitted.probs(model.belief.spline.sixcat, temp,
+                          outcome.names = c("dont believe","no way to find out",
+                                            "some higher power", "believe sometimes",
+                                            "believe but doubts","know god exists"))
+predicted.spline <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.spline) <- c("Year","Affiliation","Belief","Percent")
+
+temp <- na.omit(as.data.frame.table(prop.table(xtabs(wtssall~god+year+nones,
+                                                     data=gss),c(2,3))))
+colnames(temp) <- c("Belief","Year","Affiliation","Percent")
+temp$Year <- as.numeric(as.character(temp$Year))
+temp$Percent <- 100*temp$Percent
+ggplot(subset(temp, Affiliation=="None"), aes(x=Year, y=Percent))+
+  geom_smooth(se=FALSE, span=0.75)+
+  facet_wrap(~Belief)+
+  geom_line(data=subset(predicted.linear, Affiliation=="None"), colour="grey60", size=1)+  
+  geom_line(data=subset(predicted.spline, Affiliation=="None"), colour="grey30", size=1)+  
+  geom_vline(aes(xintercept=2000), linetype=3)+
+  geom_point(alpha=0.5)+
+  theme_bw()
+```
+
+Yes, both fits are pretty shit. So that means I need to either estimate non-parallel effects in the cumulative logit models or I could switch to a multinomial model, which also allows for non-parallel effects by default. However, in both cases the number of categories is going to make it difficult because of statistical noise for then nones, so I will collapse the six-category question on belief in god into three ordinal categories:
+
+1) **Non-belief**: "Don't believe" or "No way to Find out"
+2) **Higher Power**: "Some higher power"
+3) **Belief**: "Believe sometimes", "Believe but doubts", or "Know god exists"
+
+I first try out some cumulative logit models. I fit a linear trend model and a spline model and for each o these cases I also fit a version that forces parallel effects and one that allows effects to vary across cutpoints.
+
+```{r belief_models, echo=FALSE, error=FALSE, message=FALSE, results='asis'}
+model.belief.interact <- vglm(cbind(gss$god.simple=="non-believer", 
+                                    gss$god.simple=="higher power",
+                                    gss$god.simple=="believer")~nones*year.centered, 
+                              data=gss, weights = wtssall, 
+                              family=cumulative(reverse=TRUE, parallel=TRUE))
+model.belief.spline <- update(model.belief.interact, .~.+nones*year.spline)
+model.belief.interact.full <- update(model.belief.interact, 
+                                     family=cumulative(reverse=TRUE, parallel=FALSE))
+model.belief.spline.full <- update(model.belief.spline, 
+                                     family=cumulative(reverse=TRUE, parallel=FALSE))
+vglm.stargazer(list(model.belief.interact,model.belief.spline
+                    ,model.belief.interact.full,model.belief.spline.full),
+               sg.type="html", sg.title="Cumulative logit models predicting belief in god")
+```
+
+I am finding these cumulative logit models a little difficult to interpret, particularly around the higher power issue. Lets just try multinomial logit models with non-believers set as the reference category. This will give me a better sense of whats happening with the non-believer vs. higher power bit. 
+
+```{r belief_models_multinom, echo=FALSE, results='asis'}
+model.belief.interact.mnom <- multinom(god.simple~year.centered*nones, data=gss, weights=wtssall,
+                                       trace=FALSE)
+model.belief.spline.mnom <- update(model.belief.interact.mnom, .~.+year.spline*nones,
+                                   trace=FALSE)
+stargazer(model.belief.interact.mnom, model.belief.spline.mnom, type="html",
+          keep.stat=c("n"),
+          title = "Multinomial logit models with non-believer as the reference category",
+          column.labels = c("(1)","(1)","(2)","(2)"),
+          dep.var.caption="",
+          star.cutoffs = c(0.05,0.01,0.001),
+          header = FALSE,
+          model.numbers=FALSE)
+```
+
+The results here suggest, like the cumulative logit models, that the spline model isn't doing much here. A linear trend model fits better. That linear trend model shows that the nones are increasingly less likely to believe in god, but there is little evidence that they are less likely to believe in a non-personal higher power. So, how you think about this one depends largely on how you view that higher power question.
+
+Now, I will plot a figure that sees how well the linear and spline model fit the data over time for each group. I am going to show the fit of both the multinomial logit model and the cumulative logit models that assumed parallel effects across cutpoints. I leave out the cumulative logit models that allowed effects to vary because these are virtually the same as the multinomial logit results. 
+
+```{r belief_figure, echo=FALSE, error=FALSE, warning=FALSE, message=FALSE, fig.cap="Percent of respondents who held given beliefs about god, separated by those with a religious affilation and those without. Fit of multinomial logit models with a linear trend (light grey) and a spline with a hinge at 2000 (dark grey) are also shown. Fit of cumulative logit models with parallel effects with a linear trend (light red) and a spline (dark red) are also shown."}
+temp <- subset(data.predict, year>=1988)
+probs <- predict(model.belief.interact.mnom, temp, typ="probs")
+predicted.linear <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.linear) <- c("Year","Affiliation","Belief","Percent")
+probs <- predict(model.belief.spline.mnom, temp, typ="probs")
+predicted.spline <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.spline) <- c("Year","Affiliation","Belief","Percent")
+#also estimate the cumulative logit models with parallel effects to see how poorly they do
+probs <- get.fitted.probs(model.belief.interact, temp,
+                          outcome.names = c("non-believer","higher power","believer"))
+predicted.linear.clogit <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.linear.clogit) <- c("Year","Affiliation","Belief","Percent")
+probs <- get.fitted.probs(model.belief.spline, temp,
+                          outcome.names = c("non-believer","higher power","believer"))
+predicted.spline.clogit <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.spline.clogit) <- c("Year","Affiliation","Belief","Percent")
+
+#Now get actual values by year and affiliation
+trend <- na.omit(as.data.frame.table(prop.table(xtabs(wtssall~god.simple+year+nones,
+                                                     data=gss),c(2,3))))
+colnames(trend) <- c("Belief","Year","Affiliation","Percent")
+trend$Year <- as.numeric(as.character(trend$Year))
+trend$Percent <- 100*trend$Percent
+
+ggplot(trend, aes(x=Year, y=Percent, group=Affiliation, shape=Affiliation))+
+  facet_grid(.~Belief)+
+  #geom_smooth(span=0.75, se=FALSE, linetype=1, aes(color=Affiliation))+
+  geom_line(data=predicted.linear, colour="grey60", size=1)+  
+  geom_line(data=predicted.spline, colour="grey30", size=1)+  
+  geom_line(data=predicted.linear.clogit, colour="firebrick1", size=1)+  
+  geom_line(data=predicted.spline.clogit, colour="firebrick4", size=1)+  
+  geom_vline(aes(xintercept=2000), linetype=3)+
+  geom_point(alpha=0.9, aes(color=Affiliation))+
+  theme_bw()+
+  theme(legend.position = "bottom")+
+  scale_color_brewer(palette = "Dark2")
+```
+
+Its easy to see that the cumulative logit models with parallel effects fit the trend of higher power among the nones very poorly and ends up going in the wrong direction. the linear multinomial logit models seem to fit well. There is more evidence of a broken arrow between the non-belief and belief category than the higher power but linear trends also fit this well. 
+
+I think the stronger broken arrow in the figure with the scoring method is because of some shifts within the big categories of non-believers and believers. In particular, among the non-affiliated believers tended to shift toward believing in god without doubt and away from the more ambivalent categories of belief. 
+
+
+
+## Belief in Afterlife
+
+Belief in afterlife is a simpler yes/no question. I use binary logit models to predict respondents who said yes. I use the same model format as for the linear probability model estimated in the first section. 
+
+
+```{r postlife_models, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, results='asis'}
+model.afterlife.year <- glm((postlife=="yes")~year.centered, data=gss, weights=wtssall, 
+                            family=binomial(logit))
+model.afterlife.nones <- update(model.afterlife.year, .~.+nones)
+model.afterlife.interact <- update(model.afterlife.year, .~.+nones*year.centered)
+model.afterlife.spline <- update(model.afterlife.interact, .~.+nones*year.spline)
+models <- list(model.afterlife.year, model.afterlife.nones,
+               model.afterlife.interact, model.afterlife.spline)
+bic <- c("BIC", round(sapply(models, BIC),1))
+stargazer(models,
+          type="html", keep=c("year","none"),
+          covariate.labels = c("Calendar year", "No religious affiliation", 
+                               "Year spline (>2000)",
+                               "Year x No religious affiliation",
+                               "Year spline x No religious affiliation"),
+          star.cutoffs=c(0.05,0.01,0.001),
+          dep.var.labels.include = FALSE,
+          dep.var.caption = "",
+          title="Binary logit models predicting belief in the after-life",
+          add.lines=list(bic),
+          keep.stat=c("n","bic"))
+```
+
+These results here are generally consistent with the LPM results, although the results for the main effect of year spline and the linear year trend before 2000 for the nones are not significant. So it is not clear that the nones were increasing belief in the afterlife faster than the affiliated before 2000. The difference here is that the affiliated were closer to 1, so the increases by the nones should have been larger in terms of proportion to have the same effect on the odds. However, either way, the spline interaction clearly shows the reversal after 2000. I can also plot this fit in a figure, where is also very easy to see the change after 2000. 
+
+```{r postlife_figure, echo=FALSE, error=FALSE, message=FALSE}
+lodds <- predict(model.afterlife.spline, data.predict)
+predicted.spline <- cbind(data.predict[,c("year","nones")], 
+                   Percent=100*exp(lodds)/(1+exp(lodds)))
+
+
+
+trend <- na.omit(as.data.frame.table(prop.table(xtabs(wtssall~postlife+year+nones,
+                                                     data=gss),c(2,3))))
+trend <- subset(trend, postlife=="yes", select=c("year","nones","Freq"))
+colnames(trend) <- colnames(predicted.spline) <- c("Year","Affiliation","Percent")
+trend$Year <- as.numeric(as.character(trend$Year))
+trend$Percent <- 100*trend$Percent
+
+ggplot(trend, aes(x=Year, y=Percent, group=Affiliation, shape=Affiliation))+
+  geom_point(alpha=0.5, aes(color=Affiliation))+
+  geom_smooth(span=0.75, se=FALSE, linetype=1, aes(color=Affiliation))+
+  geom_line(data=predicted.spline, colour="grey40", size=1)+  
+  geom_vline(aes(xintercept=2000), linetype=3)+
+  theme_bw()+
+  theme(legend.position = "bottom")+
+  scale_color_brewer(palette = "Dark2")
+```
+
+## Frequency of Prayer
+
+According to the GSS explorer, before 2004, "Never" was not offered as a pre-coded response, but only recorded if volunteered by the respondent. For this reason, I have followed the GSS recommendation of collapsing "Never" and "Less than once a week" for analysis across the entire time period to produce more consistent results. 
+
+First, I look at the smoothed trend lines across all five categories for both groups. 
+
+```{r prayer_full_figure, echo=FALSE}
+temp <- na.omit(as.data.frame.table(prop.table(xtabs(wtssall~pray+year+nones,
+                                                     data=gss),c(2,3))))
+colnames(temp) <- c("Pray","Year","Affiliation","Percent")
+temp$Year <- as.numeric(as.character(temp$Year))
+temp$Percent <- 100*temp$Percent
+ggplot(temp, aes(x=Year, y=Percent, group=Pray, colour=Pray))+
+  geom_smooth(se=FALSE, span=0.75)+
+  facet_grid(.~Affiliation)+
+  geom_vline(aes(xintercept=2000), linetype=3)+
+  theme_bw()+
+  scale_color_brewer(palette = "Spectral")
+```
+
+Most of the action seems to be happening in the at least once a day and less than once a week categories. There is some decline in the weekly categories for both groups but no indication of non-linearity. So evidence of polarization for both groups in terms of prayer: you either pray once a day or you just don't really bother - nothing god hates like wishy-washy praying. 
+
+As for the belief in god section, I will first try to fit a cumulative logit model with parallel effects to all of the categories.
+
+```{r prayer_models_allcat, echo=FALSE, results='asis'}
+model.pray.linear.fivecat <- vglm(cbind(gss$pray=="lt once a week", 
+                                         gss$pray=="once a week",
+                                         gss$pray=="several times a week",
+                                         gss$pray=="once a day",
+                                         gss$pray=="several times a day")~nones*year.centered, 
+                                   data=gss, weights = wtssall, 
+                                   family=cumulative(reverse=TRUE, parallel=TRUE))
+model.pray.spline.fivecat <- update(model.pray.linear.fivecat,
+                                     .~.+nones*year.spline)
+vglm.stargazer(list(model.pray.linear.fivecat, model.pray.spline.fivecat),
+               sg.type="html", ncat=5,
+               sg.title="Cumulative logit models with parallel effects predicting frequency of prayer using all five categories")
+```
+
+How well does it fit the data?
+
+```{r prayer_fit_allcat, echo=FALSE}
+temp <- subset(data.predict, year>=1983)
+probs <- get.fitted.probs(model.pray.linear.fivecat, temp,
+                          outcome.names = c("lt once a week","once a week",
+                                            "several times a week","once a day",
+                                            "several times a day"))
+predicted.linear <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.linear) <- c("Year","Affiliation","Pray","Percent")
+probs <- get.fitted.probs(model.pray.spline.fivecat, temp,
+                          outcome.names = c("lt once a week","once a week",
+                                            "several times a week","once a day",
+                                            "several times a day"))
+predicted.spline <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.spline) <- c("Year","Affiliation","Pray","Percent")
+
+temp <- na.omit(as.data.frame.table(prop.table(xtabs(wtssall~pray+year+nones,
+                                                     data=gss),c(2,3))))
+colnames(temp) <- c("Pray","Year","Affiliation","Percent")
+temp$Year <- as.numeric(as.character(temp$Year))
+temp$Percent <- 100*temp$Percent
+ggplot(temp, aes(x=Year, y=Percent))+
+  facet_grid(Affiliation~Pray)+
+  geom_smooth(spane=0.75, se=FALSE)+
+  geom_line(data=predicted.linear, colour="grey60", size=1)+
+  geom_line(data=predicted.spline, colour="grey30", size=1)+  
+  geom_point(alpha=0.5)+
+  geom_vline(aes(xintercept=2000), linetype=3)+
+  theme_bw()
+```
+
+The fit is not horrible here but it does seem to be missing the trend and the level for the weekly values for the none and also mising the trend a bit for several times a day for the nones. So, I follow the same procedure as for belief in god in collapsing the number of categories and testing models with less constraints. 
+
+I collapsed the five-category prayer variable into a three category variable of: 
+
+1) **less than once a week**: those who said "never" or "less that once a week". There was almost no-one in the "never" category until 2004 so I suspect something in the question wording shifted here. I **need to check this**.
+2) **weekly**: those who said "once a week" or "several times a week".
+3) **daily**: those who said "once a day" or "several times a day".
+
+I initially ran cumulative logit models similar to those run for belief in god. However, the fitting procedure breaks in the VGLM funcion when trying to fit the model which allows all effects to be non-parallel, so I had to try some more constrained models.
+
+```{r prayer_models, echo=FALSE, error=FALSE, message=FALSE, results='asis'}
+model.pray.interact <- vglm(cbind(pray.simple=="lt once a week",
+                              pray.simple=="weekly",
+                              pray.simple=="daily")~nones*year.centered, 
+                        data=gss, weights = wtssall, 
+                        family=cumulative(reverse=TRUE, parallel=TRUE))
+model.pray.interact.full <- update(model.pray.interact, 
+                                   family=cumulative(reverse=TRUE, parallel=FALSE))
+model.pray.spline <- update(model.pray.interact, .~.+nones*year.spline)
+model.pray.spline.compare1 <- update(model.pray.spline, 
+                                    family=cumulative(reverse=TRUE,
+                                                      parallel=FALSE~year.centered+year.spline))
+model.pray.spline.compare2 <- update(model.pray.spline, 
+                                    family=cumulative(reverse=TRUE,
+                                                      parallel=FALSE~nones))
+vglm.stargazer(list(model.pray.interact, model.pray.interact.full, 
+                    model.pray.spline, model.pray.spline.compare1, model.pray.spline.compare2),
+               sg.type="html", sg.title="Cumulative logit models predicting frequency of prayer")
+```
+
+This seems to show results consistent with those of the OLS regression models but it doesn't allow for fully different effects at the weekly and daily cutpoints. This seems to be important as the fit of the models shown below indicates. For this figure I used model 5 for the spline  model. The spline model can't get the direction right for the weekly level. The fit is even worse in models 3 and 4.
+
+```{r prayer_figure, echo=FALSE, error=FALSE, message=FALSE}
+temp <- subset(data.predict, year>=1983)
+probs <- get.fitted.probs(model.pray.interact.full, temp,
+                          outcome.names = c("lt once a week","weekly","daily"))
+predicted.linear <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.linear) <- c("Year","Affiliation","Prayer","Percent")
+probs <- get.fitted.probs(model.pray.spline.compare2, temp,
+                          outcome.names = c("lt once a week","weekly","daily"))
+predicted.spline <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.spline) <- c("Year","Affiliation","Prayer","Percent")
+
+trend <- na.omit(as.data.frame.table(prop.table(xtabs(wtssall~pray.simple+year+nones,
+                                          data=gss),c(2,3))))
+colnames(trend) <- c("Prayer","Year","Affiliation","Percent")
+trend$Year <- as.numeric(as.character(trend$Year))
+trend$Percent <- 100*trend$Percent
+
+ggplot(trend, aes(x=Year, y=Percent, group=Affiliation, shape=Affiliation))+
+  facet_grid(.~Prayer)+
+  geom_smooth(span=0.75, se=FALSE, linetype=1, aes(color=Affiliation))+
+  geom_line(data=predicted.linear, colour="grey60", size=1)+
+  geom_line(data=predicted.spline, colour="grey30", size=1)+  
+  geom_vline(aes(xintercept=2000), linetype=3)+
+  geom_point(alpha=0.5, aes(color=Affiliation))+
+  theme_bw()+
+  theme(legend.position = "bottom")+
+  scale_color_brewer(palette = "Dark2")
+```
+
+To remedy this I decided to estimate the cumulative logit models more primitively by just estimating two separate binary logit models at the two cutpoints.
+
+```{r prayer_weekly_models_binary, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, results='asis'}
+model.pray_weekly.year <- glm((pray.simple=="weekly" | pray.simple=="daily")~year.centered, 
+                        data=gss, weights = wtssall, family=binomial(logit))
+model.pray_weekly.nones <- update(model.pray_weekly.year, .~.+nones)
+model.pray_weekly.interact <- update(model.pray_weekly.year, .~.+nones*year.centered)
+model.pray_weekly.spline <- update(model.pray_weekly.interact, .~.+nones*year.spline)
+
+models <- list(model.pray_weekly.year, model.pray_weekly.nones,
+               model.pray_weekly.interact, model.pray_weekly.spline)
+bic <- c("BIC", round(sapply(models, BIC),1))
+stargazer(models,
+          type="html", keep=c("year","none"),
+          covariate.labels = c("Calendar year", "No religious affiliation", 
+                               "Year spline (>2000)",
+                               "Year x No religious affiliation",
+                               "Year spline x No religious affiliation"),
+          star.cutoffs=c(0.05,0.01,0.001),
+          dep.var.labels.include = FALSE,
+          dep.var.caption = "",
+          title="Binary logit models predicting at least weekly prayer",
+          add.lines=list(bic),
+          keep.stat=c("n","bic"))
+```
+
+```{r prayer_daily_models_binary, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, results='asis'}
+model.pray_daily.year <- glm((pray.simple=="daily")~year.centered, 
+                        data=gss, weights = wtssall, family=binomial(logit))
+model.pray_daily.nones <- update(model.pray_daily.year, .~.+nones)
+model.pray_daily.interact <- update(model.pray_daily.year, .~.+nones*year.centered)
+model.pray_daily.spline <- update(model.pray_daily.interact, .~.+nones*year.spline)
+
+models <- list(model.pray_daily.year, model.pray_daily.nones,
+               model.pray_daily.interact, model.pray_daily.spline)
+bic <- c("BIC", round(sapply(models, BIC),1))
+stargazer(models,
+          type="html", keep=c("year","none"),
+          covariate.labels = c("Calendar year", "No religious affiliation", 
+                               "Year spline (>2000)",
+                               "Year x No religious affiliation",
+                               "Year spline x No religious affiliation"),
+          star.cutoffs=c(0.05,0.01,0.001),
+          dep.var.labels.include = FALSE,
+          dep.var.caption = "",
+          title="Binary logit models predicting at least daily prayer",
+          add.lines=list(bic),
+          keep.stat=c("n","bic"))
+```
+
+The results here are both consistent with the initial OLS regression estimates, but are considerably weaker for the weekly cutpoint. This suggests to me (along with the initial smoothed trend lines) that the important cutpoint is daily or less. Weekly is just a declining category for everybody. This should be fairly easy to capture in a multinomial model. 
+
+```{r prayer_models_multinom, echo=FALSE, results='asis'}
+model.pray.interact.mnom <- multinom(pray.simple~year.centered*nones, data=gss, weights=wtssall,
+                                       trace=FALSE)
+model.pray.spline.mnom <- update(model.pray.interact.mnom, .~.+year.spline*nones,
+                                   trace=FALSE)
+stargazer(model.pray.interact.mnom, model.pray.spline.mnom, type="html",
+          keep.stat=c("n"),
+          title = "Multinomial logit models with non-believer as the reference category",
+          column.labels = c("(1)","(1)","(2)","(2)"),
+          dep.var.caption="",
+          star.cutoffs = c(0.05,0.01,0.001),
+          header = FALSE,
+          model.numbers=FALSE)
+```
+
+
+```{r prayer_figure_mnom, echo=FALSE, error=FALSE, warning=FALSE, message=FALSE, fig.cap="Percent of respondents who prayed at a certain frequency, separated by those with a religious affilation and those without. LOWESS smoother shown for each trend based on weighted data. Fit of multinomial logit models with a linear trend (light grey) and a spline with a hinge at 2000 (dark grey) are also shown."}
+temp <- subset(data.predict, year>=1983)
+probs <- predict(model.pray.interact.mnom, temp, typ="probs")
+predicted.linear <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.linear) <- c("Year","Affiliation","Pray","Percent")
+probs <- predict(model.pray.spline.mnom, temp, typ="probs")
+predicted.spline <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.spline) <- c("Year","Affiliation","Pray","Percent")
+
+#Now get actual values by year and affiliation
+trend <- na.omit(as.data.frame.table(prop.table(xtabs(wtssall~pray.simple+year+nones,
+                                                     data=gss),c(2,3))))
+colnames(trend) <- c("Pray","Year","Affiliation","Percent")
+trend$Year <- as.numeric(as.character(trend$Year))
+trend$Percent <- 100*trend$Percent
+
+ggplot(trend, aes(x=Year, y=Percent, group=Affiliation, shape=Affiliation))+
+  facet_grid(.~Pray)+
+  geom_smooth(span=0.75, se=FALSE, linetype=1, aes(color=Affiliation))+
+  geom_line(data=predicted.linear, colour="grey60", size=1)+  
+  geom_line(data=predicted.spline, colour="grey30", size=1)+  
+  geom_vline(aes(xintercept=2000), linetype=3)+
+  geom_point(alpha=0.5, aes(color=Affiliation))+
+  theme_bw()+
+  theme(legend.position = "bottom")+
+  scale_color_brewer(palette = "Dark2")
+```
+
+Fits really nice now. Clear indication of non-linearity between less than once a week and daily. Polarization in two different ways. Polarization between the affiliated and unaffiliated since 2000. Polarization within each group by the decline in weekly prayers - Increasingly for both groups, you either pray daily of you don't pray much at all (or at least thats what you say you do). 
+
+## Birth Cohort Analysis
+
+```{r build_birth_cohort_data, echo=FALSE, message=FALSE}
+wmean_cohort_year_affiliation <- function(varname, dataset=gss) {
+  outcome <- na.omit(dataset[,varname])
+  wmeans <- with(subset(dataset, !is.na(dataset[,varname])), {
+       as.data.frame.table(tapply(outcome*wtssall, 
+                                            list(year, nones, birthyear10), sum, na.rm=TRUE)/
+                                       tapply(wtssall, 
+                                              list(year, nones, birthyear10), sum, na.rm=TRUE))
+    })
+  colnames(wmeans) <- c("Year","Affiliation","Birthyear",varname)
+  wmeans$Year <- as.numeric(as.character(wmeans$Year))
+  wmeans$Birthyear <- factor(wmeans$Birthyear, ordered=TRUE)  
+  return(wmeans)
+}
+birth_cohorts <- merge(wmean_cohort_year_affiliation("god_scale"),
+                       wmean_cohort_year_affiliation("postlife_scale"),
+                       by=c("Year","Affiliation","Birthyear"))
+birth_cohorts <- merge(birth_cohorts,
+                       wmean_cohort_year_affiliation("prayer_scale"),
+                       by=c("Year","Affiliation","Birthyear"))
+n <- as.data.frame.table(table(gss$year, gss$nones, gss$birthyear10))
+colnames(n) <- c("Year","Affiliation","Birthyear","n")
+birth_cohorts <- merge(birth_cohorts, n)
+```
+
+Lets take a look at where we get really small non-zero samples (n<20) by birth cohort and affiliation. 
+
+
+```{r check_cohort_size, echo=FALSE}
+subset(birth_cohorts, n>0 & n<20)[,c("Year","Affiliation","Birthyear","n")]
+birth_cohorts <- subset(birth_cohorts, n>10)
+```
+
+Most of these are cases where a young cohort has not fully aged into the sample. Lets just eliminate the cases of 10 or less for simplicity.
+
+Now, I will look at the trend of each variable separately by cohort and affiliation. These plots may ba a little busy because I want to also include points in order to make sure one weird cohort is not skewing things. 
+
+```{r belief_cohort, echo=FALSE}
+ggplot(birth_cohorts, aes(x=Year, y=god_scale))+
+  facet_grid(.~Affiliation)+
+  #geom_smooth(data=subset(trends, response=="Belief in god"), se=FALSE, color="black", size=2)+
+  stat_smooth(span=1, se=FALSE, linetype=1, aes(group=Birthyear, color=Birthyear, weight=n))+
+  geom_point(alpha=1, aes(group=Birthyear, color=Birthyear, size=n),
+             show.legend=FALSE)+
+  theme_bw()+
+  theme(legend.position = "bottom")+
+  scale_color_manual(values=c("darkred","indianred","springgreen","seagreen","darkgreen",
+                              "deepskyblue","lightskyblue"))+
+  scale_y_continuous("Belief in god scale", limits=c(0,1))
+```
+
+```{r postlife_cohort, echo=FALSE}
+ggplot(birth_cohorts, aes(x=Year, y=postlife_scale))+
+  facet_grid(.~Affiliation)+
+  #geom_smooth(data=subset(trends, response=="Belief in god"), se=FALSE, color="black", size=2)+
+  stat_smooth(span=1, se=FALSE, linetype=1, aes(group=Birthyear, color=Birthyear, weight=n))+
+  geom_point(alpha=1, aes(group=Birthyear, color=Birthyear, size=n),
+             show.legend=FALSE)+
+  theme_bw()+
+  theme(legend.position = "bottom")+
+  scale_color_manual(values=c("darkred","indianred","springgreen","seagreen","darkgreen",
+                              "deepskyblue","lightskyblue"))+
+  scale_y_continuous("Belief in afterlife scale", limits=c(0,1))
+```
+
+```{r prayer_cohort, echo=FALSE}
+ggplot(birth_cohorts, aes(x=Year, y=prayer_scale))+
+  facet_grid(.~Affiliation)+
+  #geom_smooth(data=subset(trends, response=="Belief in god"), se=FALSE, color="black", size=2)+
+  stat_smooth(span=1, se=FALSE, linetype=1, aes(group=Birthyear, color=Birthyear, weight=n))+
+  geom_point(alpha=1, aes(group=Birthyear, color=Birthyear, size=n),
+             show.legend=FALSE)+
+  theme_bw()+
+  theme(legend.position = "bottom")+
+  scale_color_manual(values=c("darkred","indianred","springgreen","seagreen","darkgreen",
+                              "deepskyblue","lightskyblue"))+
+  scale_y_continuous("Prayer frequency scale", limits=c(0,1))
+```
+
+There is some evidence of cohort trends for belief in god and prayer frequency in the manner that might be expected. The youngest cohorts have the lowest values and there hasn't been nearly as much change across cohorts in the trends. This is not so for belief in the afterlife. There is also the interesting pattern tha the 1940-49 cohort tends to be one of the lowest consistently in all cases (The OG aethists). The baby boom cohorts and the 1970-79 seem to move similarly. 
+
+This all suggests to me that I might get more purchase on this if I group the birth cohorts as follows:
+
+- 1940-49: The pre-baby boom cohorts. OG Aesthists. No concern about dilution for these groups. 
+- 1950-1979: The baby boomer-ish cohorts. 
+- 1980+: The clearly post-baby boom cohorts. Also the ones that would have entered the data post 2000. 
+
+```{r custom_cohorts, echo=FALSE, message=FALSE}
+gss$custom_cohort <- factor(ifelse(is.na(gss$birthyear10), NA,
+                                   ifelse(gss$birthyear10>="1980-1989", "after 1979",
+                                          ifelse(gss$birthyear10>="1950-1959", "1950-1979",                                                       "before 1950"))),
+                            levels=c("before 1950","1950-1979","after 1979"),
+                            ordered=TRUE)
+table(gss$birthyear10, gss$custom_cohort, exclude=NULL)
+
+wmean_cohort_year_affiliation <- function(varname, dataset=gss) {
+  outcome <- na.omit(dataset[,varname])
+  wmeans <- with(subset(dataset, !is.na(dataset[,varname])), {
+       as.data.frame.table(tapply(outcome*wtssall, 
+                                            list(year, nones, custom_cohort), sum, na.rm=TRUE)/
+                                       tapply(wtssall, 
+                                              list(year, nones, custom_cohort), sum, na.rm=TRUE))
+    })
+  colnames(wmeans) <- c("Year","Affiliation","Birthyear","Mean")
+  wmeans$Year <- as.numeric(as.character(wmeans$Year))
+  wmeans$Birthyear <- factor(wmeans$Birthyear, ordered=TRUE)  
+  n <- as.data.frame.table(table(gss$year, gss$nones, gss$custom_cohort))
+  colnames(n) <- c("Year","Affiliation","Birthyear","n")
+  wmeans <- merge(wmeans, n)
+  return(wmeans)
+}
+
+birth_cohorts <- rbind(cbind(wmean_cohort_year_affiliation("god_scale"), 
+                             response="belief in god"),
+                       cbind(wmean_cohort_year_affiliation("postlife_scale"), 
+                             response="belief in afterlife"),
+                       cbind(wmean_cohort_year_affiliation("prayer_scale"), 
+                             response="prayer frequency"))
+
+ggplot(birth_cohorts, aes(x=Year, y=Mean))+
+  facet_grid(response~Affiliation)+
+  stat_smooth(span=1, se=FALSE, linetype=1, aes(group=Birthyear, weight=n, color=Birthyear))+
+  geom_point(aes(color=Birthyear, size=n), alpha=0.5)+
+  theme_bw()+
+  theme(legend.position = "bottom")+
+  scale_y_continuous("Mean based on linear scaling of ordinal variables",limit=c(0,1))+
+  scale_color_manual(values=c("red","darkgreen","blue"))
+```
+
+
+## Differences between the never affiliated and disaffiliated
+
+Schwadel suggests that the percent of Americans who have grown up without a religious affiliation has grown considerably. We can therefore distinguish the never affiliated from the disaffiliated among our unaffiliated population. Its possible that the change in trend is driven by a changing composition within these groups and differences in belief. If the never affiliated are a larger proportion of the unaffiliated and they have lower levels of beliefs and practices then this would drive the overall effect down. 
+
+First lets look at the percentage of the never and disaffiliated over time.
+
+```{r never_trend, echo=FALSE}
+temp <- as.data.frame.table(prop.table(xtabs(wtssall~year+affiliation, data=gss),1))
+temp$year <- as.numeric(as.character(temp$year))
+temp$Percent <- temp$Freq*100
+ggplot(subset(temp, affiliation!="Affiliated"), 
+       aes(x=year, y=Percent, group=affiliation, color=affiliation, shape=affiliation))+
+  geom_point()+
+  geom_smooth(se=FALSE, span=0.75)+
+  theme_bw()+
+  ylab("Percent")
+```
+
+This is interesting, but also a bit puzzling. Why is the proportion never affiliated leveling off? If the proportion of the population raised without a religious preference is growing, we would expect the never affiliated to also grow absolutely, unless there is some weird religious revival going on among those raised with no religion in late 2000s. I don't really have space to delve into this issue for this project, but should flag it for some future work. 
+
+One issue is that it appears the percent who report being raised without religion plateaued in the mid-2000s. This doesn't seem to make a lot of sense given the rise in the nones but its a tricky thing to work out. It could reflect some complex birth cohort-fertility timing demographic trend or it might just reflect unreliable rememberances of what respondents experienced at age 16. I should do this by birth cohorts as well. 
+
+```{r explore_raised_no_relig, echo=FALSE}
+temp <- as.data.frame.table(prop.table(table(gss$year, gss$nones16), 1))
+colnames(temp) <- c("Year","Raised","Percent")
+temp$Year <- as.numeric(as.character(temp$Year))
+temp$Percent <- 100*temp$Percent
+ggplot(subset(temp, Raised=="None"), aes(x=Year, y=Percent))+
+  geom_point()+
+  geom_smooth(se=FALSE)+
+  theme_bw()+
+  ylab("Percent who report being raised without religion")
+```
+
+```{r explore_cohort_never, echo=FALSE}
+temp <- as.data.frame.table(prop.table(table(gss$birthyear10, gss$nones16), 1))
+colnames(temp) <- c("Birthyear","Raised","Percent")
+temp$Percent <- 100*temp$Percent
+ggplot(subset(temp, Raised=="None"), aes(x=Birthyear, y=Percent))+
+  geom_col()+
+  theme_bw()+
+  ylab("Percent who report being raised without religion")
+```
+
+So, the results by cohort make more sense. 
+
+Lets look at the share of never affiliated out of all unaffiliated as well.
+
+```{r share_never, echo=FALSE}
+x <- prop.table(xtabs(wtssall~year+affiliation, data=gss),1)
+trend <- data.frame(year=as.numeric(rownames(x)),
+           share=100*x[,"Never Affiliated"]/(x[,"Never Affiliated"]+x[,"Disaffiliated"]))
+ggplot(trend, aes(x=year, y=share))+
+  geom_point()+
+  geom_smooth(se=FALSE)+
+  theme_bw()+
+  ylab("Share of never affiliated among all unaffiliated")+
+  expand_limits(y=0)
+```
+
+This proportion is rising thoughout the early period (pretty significantly) and then hits a ceiling in the mid-2000s before declining a bit. So, its unlikely that this can explain what is going on unless the never affiliated actually have stronger beliefs and practices.
+
+Lets look at differences between the never affiliated and the disaffiliated
+
+```{r neveraff_scale_figure, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Trends in religious beliefs and practices among the religiously affiliated, the disaffiliated, and the never-affiliated. All ordinal questions are treated as a linear quantitative scale with a maximum of one and a minimum of zero. Smoothed (LOWESS) trend lines for each group are shown in light gray lines."}
+#define a handy little function for calculating the weighted means by year and affiliation
+wmean_year_affiliation <- function(varname, dataset=gss) {
+  outcome <- na.omit(dataset[,varname])
+  wmeans <- with(subset(dataset, !is.na(dataset[,varname])), {
+       as.data.frame.table(tapply(outcome*wtssall, 
+                                            list(year, affiliation), sum, na.rm=TRUE)/
+                                       tapply(wtssall, 
+                                              list(year, affiliation), sum, na.rm=TRUE))
+    })
+  colnames(wmeans) <- c("Year","Affiliation","Mean")
+  wmeans$Year <- as.numeric(as.character(wmeans$Year))
+  return(wmeans)
+}
+
+trends <- rbind(cbind(wmean_year_affiliation("god_scale"), response="Belief in god"),
+              cbind(wmean_year_affiliation("postlife_scale"), response="Belief in afterlife"),
+              cbind(wmean_year_affiliation("prayer_scale"), response="Prayer frequency"),
+              cbind(wmean_year_affiliation("attend_scale"), response="Attendance frequency"))
+
+trends$response <- factor(trends$response, 
+                        levels=c("Belief in god","Belief in afterlife",
+                                 "Prayer frequency", "Attendance frequency"))
+
+#make figure
+ggplot(trends, aes(x=Year, y=Mean))+
+  facet_grid(.~response)+
+  geom_smooth(se=FALSE, span=0.85, linetype=1,alpha=0.7,
+              aes(group=Affiliation, colour=Affiliation))+
+  geom_vline(aes(xintercept=2000), linetype=3)+
+  geom_point(alpha=0.5, aes(shape=Affiliation, colour=Affiliation))+
+  theme_bw()+
+  theme(legend.position = "bottom")+
+  scale_y_continuous("Mean based on linear scaling of ordinal variables",limit=c(0,1))+
+  scale_color_brewer(palette = "Dark2")
+```
+
+
+```{r never_models, echo=FALSE, results='asis'}
+#now build the models for the prediction
+spline.cutpoint <- 2000
+gss$year.centered <- gss$year-spline.cutpoint
+gss$year.spline <- ifelse(gss$year.centered<0, 0, gss$year.centered)
+
+linear_models <- lapply(list(gss$god_scale, gss$postlife_scale, 
+                             gss$prayer_scale, gss$attend_scale),
+                        function(dv) {
+                          list(
+                            lm(dv~year.centered+affiliation, data=gss, weights=wtssall),
+                            lm(dv~year.centered*affiliation, data=gss, weights=wtssall),
+                            lm(dv~(year.centered+year.spline)*affiliation, data=gss,
+                               weights=wtssall)
+                          )
+                        })
+
+#spit out regression tables
+stargazer(linear_models[[1]], keep.stat=c("n","rsq"), type="html",
+          covariate.labels = c("Year","Year spline (>2000)",
+                               "Never affiliated", "Disaffiliated",
+                               "Year x Never",
+                               "Year x Disaffiliated",
+                               "Year spline x Never",
+                               "Year spline x Disaffiliated"),
+          digits=4,
+          star.cutoffs=c(0.05,0.01,0.001),
+          dep.var.labels.include = FALSE,
+          dep.var.caption = "Strength of belief in god",
+          title="Linear regression models predicting strength of belief in god")
+
+stargazer(linear_models[[2]], keep.stat=c("n","rsq"), type="html",
+          covariate.labels =  c("Year","Year spline (>2000)",
+                               "Never affiliated", "Disaffiliated",
+                               "Year x Never",
+                               "Year x Disaffiliated",
+                               "Year spline x Never",
+                               "Year spline x Disaffiliated"),
+          digits=4,
+          star.cutoffs=c(0.05,0.01,0.001),
+          dep.var.labels.include = FALSE,
+          dep.var.caption = "Strength of belief in afterlife",
+          title="Linear regression models predicting strength of belief in afterlife")
+
+stargazer(linear_models[[3]], keep.stat=c("n","rsq"), type="html",
+          covariate.labels =  c("Year","Year spline (>2000)",
+                               "Never affiliated", "Disaffiliated",
+                               "Year x Never",
+                               "Year x Disaffiliated",
+                               "Year spline x Never",
+                               "Year spline x Disaffiliated"),
+          digits=4,
+          star.cutoffs=c(0.05,0.01,0.001),
+          dep.var.labels.include = FALSE,
+          dep.var.caption = "Frequency of prayer",
+          title="Linear regression models predicting frequency of prayer")
+
+stargazer(linear_models[[4]], keep.stat=c("n","rsq"), type="html",
+          covariate.labels =  c("Year","Year spline (>2000)",
+                               "Never affiliated", "Disaffiliated",
+                               "Year x Never",
+                               "Year x Disaffiliated",
+                               "Year spline x Never",
+                               "Year spline x Disaffiliated"),
+          digits=4,
+          star.cutoffs=c(0.05,0.01,0.001),
+          dep.var.labels.include = FALSE,
+          dep.var.caption = "Frequency of attendance",
+          title="Linear regression models predicting frequency of attendance")
+```
