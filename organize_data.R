@@ -74,12 +74,13 @@ table(GSS$god, GSS$god.simple)
 # 1        "Yes"
 # 0        "Not applicable"
 
+
+#I will consider the DKs as a middle category
 GSS$postlife <- factor(GSS$POSTLIFE, 
-                       levels=2:1,
-                       labels=c("no","yes"),
+                       levels=c(2,8,1),
+                       labels=c("no","dont know","yes"),
                        ordered=TRUE)
 table(GSS$postlife, GSS$POSTLIFE, exclude=NULL)
-
 
 
 # Recode Attendance -------------------------------------------------------
@@ -170,6 +171,6 @@ GSS$vstrat <- GSS$VSTRAT
 #if you are missing on affilation then drop. Limit to recoded variables
 gss <- subset(GSS, !is.na(nones),
               select=c("year","age","birthyear10","nones", "nones16","affiliation",
-                       "god","god.simple","postlife","pray","pray.simple","attend",
-                       "wtssall","vstrat"))
+                       "god","god.simple","postlife","pray","pray.simple",
+                       "attend","wtssall","vstrat"))
 save(gss, file="output/gss_relig.RData")

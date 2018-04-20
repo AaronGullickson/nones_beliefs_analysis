@@ -39,15 +39,13 @@ ggplot(subset(temp, nones=="None"), aes(x=year, y=Percent))+
 To get a general overview of the trend, I will start by just crudely treating the ordinal responses as a quantitative variable with the assumption of equal (linear) differences between each category on the scale. I will scale each of these variables to have a minimum of 0 and a maximum of 1. The four variables I will look at are:
 
 - Belief in god (6 categories)
-- Belief in afterlife (2 categories, yes/no)
+- Belief in afterlife (3 categories, yes/dont know/no)
 - Prayer frequency (5 categories). Because the never category increases dramatically and suddenly after 2000, I combine it and the "less than once a week" option for consistency across time.
 - Attendance frequency (9 categories).
 
-Note that because the afterlife question is binary, the scale I create for this variable is just equivalent to the proportion who said yes. 
-
 ```{r create_simple_scale, echo=FALSE}
 gss$god_scale <- (as.numeric(gss$god)-1)/5
-gss$postlife_scale <- as.numeric(gss$postlife=="yes")
+gss$postlife_scale <- (as.numeric(gss$postlife)-1)/2
 gss$prayer_scale <- (as.numeric(gss$pray)-1)/4
 gss$attend_scale <- (as.numeric(gss$attend)-1)/8
 ```
@@ -403,57 +401,79 @@ I think the stronger broken arrow in the figure with the scoring method is becau
 
 ## Belief in Afterlife
 
-Belief in afterlife is a simpler yes/no question. I use binary logit models to predict respondents who said yes. I use the same model format as for the linear probability model estimated in the first section. 
+Lets plot up the percentages by all three categories to see what is going on. 
 
-
-```{r postlife_models, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, results='asis'}
-model.afterlife.year <- glm((postlife=="yes")~year.centered, data=gss, weights=wtssall, 
-                            family=binomial(logit))
-model.afterlife.nones <- update(model.afterlife.year, .~.+nones)
-model.afterlife.interact <- update(model.afterlife.year, .~.+nones*year.centered)
-model.afterlife.spline <- update(model.afterlife.interact, .~.+nones*year.spline)
-models <- list(model.afterlife.year, model.afterlife.nones,
-               model.afterlife.interact, model.afterlife.spline)
-bic <- c("BIC", round(sapply(models, BIC),1))
-stargazer(models,
-          type="html", keep=c("year","none"),
-          covariate.labels = c("Calendar year", "No religious affiliation", 
-                               "Year spline (>2000)",
-                               "Year x No religious affiliation",
-                               "Year spline x No religious affiliation"),
-          star.cutoffs=c(0.05,0.01,0.001),
-          dep.var.labels.include = FALSE,
-          dep.var.caption = "",
-          title="Binary logit models predicting belief in the after-life",
-          add.lines=list(bic),
-          keep.stat=c("n","bic"))
-```
-
-These results here are generally consistent with the LPM results, although the results for the main effect of year spline and the linear year trend before 2000 for the nones are not significant. So it is not clear that the nones were increasing belief in the afterlife faster than the affiliated before 2000. The difference here is that the affiliated were closer to 1, so the increases by the nones should have been larger in terms of proportion to have the same effect on the odds. However, either way, the spline interaction clearly shows the reversal after 2000. I can also plot this fit in a figure, where is also very easy to see the change after 2000. 
-
-```{r postlife_figure, echo=FALSE, error=FALSE, message=FALSE}
-lodds <- predict(model.afterlife.spline, data.predict)
-predicted.spline <- cbind(data.predict[,c("year","nones")], 
-                   Percent=100*exp(lodds)/(1+exp(lodds)))
-
-
-
-trend <- na.omit(as.data.frame.table(prop.table(xtabs(wtssall~postlife+year+nones,
+```{r postlife_full_figure, echo=FALSE, message=FALSE, warning=FALSE}
+temp <- na.omit(as.data.frame.table(prop.table(xtabs(wtssall~postlife+year+nones,
                                                      data=gss),c(2,3))))
-trend <- subset(trend, postlife=="yes", select=c("year","nones","Freq"))
-colnames(trend) <- colnames(predicted.spline) <- c("Year","Affiliation","Percent")
-trend$Year <- as.numeric(as.character(trend$Year))
-trend$Percent <- 100*trend$Percent
-
-ggplot(trend, aes(x=Year, y=Percent, group=Affiliation, shape=Affiliation))+
-  geom_point(alpha=0.5, aes(color=Affiliation))+
-  geom_smooth(span=0.75, se=FALSE, linetype=1, aes(color=Affiliation))+
-  geom_line(data=predicted.spline, colour="grey40", size=1)+  
+colnames(temp) <- c("Afterlife","Year","Affiliation","Percent")
+temp$Year <- as.numeric(as.character(temp$Year))
+temp$Percent <- 100*temp$Percent
+ggplot(temp, aes(x=Year, y=Percent, group=Afterlife, colour=Afterlife))+
+  geom_smooth(se=FALSE, span=0.75)+
+  facet_grid(.~Affiliation)+
   geom_vline(aes(xintercept=2000), linetype=3)+
+  geom_point(alpha=0.5)+
   theme_bw()+
-  theme(legend.position = "bottom")+
-  scale_color_brewer(palette = "Dark2")
+  scale_color_brewer(palette = "Set1")
 ```
+
+Most of the action seems to be captured by the yes/no difference. There may be some slight rise in don't know before 2000 which then levels off after 2000. Lets try fitting three separate cumulative logit models. 
+ - parallel effects and a linear trend
+ - parallel effects and a spline term
+ - non-parallel effects and a spline term
+
+```{r postlife_models, echo=FALSE, results='asis'}
+model.postlife.linear <- vglm(cbind(gss$postlife=="no", 
+                                    gss$postlife=="dont know",
+                                    gss$postlife=="yes")~nones*year.centered, 
+                              data=gss, weights = wtssall, 
+                              family=cumulative(reverse=TRUE, parallel=TRUE))
+model.postlife.spline <- update(model.postlife.linear,
+                                .~.+nones*year.spline)
+model.postlife.spline.full <- update(model.postlife.spline,
+                                     family=cumulative(reverse=TRUE, parallel=FALSE))
+vglm.stargazer(list(model.postlife.linear, model.postlife.spline,
+                    model.postlife.spline.full),
+               sg.type="html", ncat=3,
+               sg.title="Cumulative logit models predicting belief in afterlife using all three categories")
+```
+
+The spline models both fit well regardless of whether we use parallel or non-parallel effects. In the non-parallel case the effects all seem stronger (except for the none dummy) for the first cutpoint between no and don't know, but I still get the same basic result if I cut at don't know and yes. 
+
+Lets look at how well the models fit. The light grey shows the fit of the parallel spline model and the dark grey shows the fit of the non-parallel spline model.
+
+```{r postlife_fit, echo=FALSE}
+temp <- subset(data.predict, year>=1973)
+probs <- get.fitted.probs(model.postlife.linear, temp,
+                          outcome.names = c("no","dont know","yes"))
+predicted.linear <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.linear) <- c("Year","Affiliation","Afterlife","Percent")
+probs <- get.fitted.probs(model.postlife.spline, temp,
+                          outcome.names = c("no","dont know","yes"))
+predicted.spline <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.spline) <- c("Year","Affiliation","Afterlife","Percent")
+probs <- get.fitted.probs(model.postlife.spline.full, temp,
+                          outcome.names = c("no","dont know","yes"))
+predicted.spline.full <- cbind(temp[,c("year","nones")], as.data.frame.table(probs*100)[,-1])
+colnames(predicted.spline.full) <- c("Year","Affiliation","Afterlife","Percent")
+temp <- na.omit(as.data.frame.table(prop.table(xtabs(wtssall~postlife+year+nones,
+                                                     data=gss),c(2,3))))
+colnames(temp) <- c("Afterlife","Year","Affiliation","Percent")
+temp$Year <- as.numeric(as.character(temp$Year))
+temp$Percent <- 100*temp$Percent
+ggplot(temp, aes(x=Year, y=Percent, group=Affiliation))+
+  geom_smooth(se=FALSE, span=0.75)+
+  facet_wrap(~Afterlife)+
+  #geom_line(data=predicted.linear, colour="grey80", size=1)+  
+  geom_line(data=predicted.spline, colour="grey60", size=1)+  
+  geom_line(data=predicted.spline.full, colour="grey30", size=1)+  
+  geom_vline(aes(xintercept=2000), linetype=3)+
+  geom_point(alpha=0.5)+
+  theme_bw()
+```
+
+The parallel model has some fit problems for the DK category for nones. Nonetheless, I don't think it is necessary to move to a different model here as the results are pretty consistent across at each cutpoint. Both the don't know and yes categories rose relative to no before 2000 and both fell relative to the no category after 2000.
 
 ## Frequency of Prayer
 
