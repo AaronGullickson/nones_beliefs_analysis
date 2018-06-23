@@ -1,6 +1,6 @@
 # The Diverging Beliefs and Practices of the Religiously Affiliated and Unaffiliated in the United States
 
-This repository contains the data and code for the analysis in the paper entitled "The Diverging Beliefs and Practices of the Religiously Affiliated and Unaffiliated in the United States" which has now been accepted by *Sociological Science* and is forthcoming. The main analytical results can be found in the `analysis.html` file which can be opened with any web browser. 
+This repository contains the data and code for the analysis in the paper entitled "The Diverging Beliefs and Practices of the Religiously Affiliated and Unaffiliated in the United States" which is [now published in *Sociological Science*](https://dx.doi.org/10.15195/v5.a16). The main analytical results can be found in the `analysis.html` file which can be opened with any web browser. 
 
 The data here come from the General Social Survey. The raw data from a GSS extract through GSS Explorer are included in the `input` directory. The `output` directory contains the analytical data used in the analysis after recoding/cleaning of the raw data. 
 
