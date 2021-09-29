@@ -1,6 +1,6 @@
 # The Diverging Beliefs and Practices of the Religiously Affiliated and Unaffiliated in the United States
 
-This repository contains the data and code for the analysis in the paper entitled "The Diverging Beliefs and Practices of the Religiously Affiliated and Unaffiliated in the United States" which is [now published in *Sociological Science*](https://dx.doi.org/10.15195/v5.a16). The main analytical results can be found in the `analysis.html` file. This file can be downloaded and opened in any browser or it can be viewed online [here](https://cdn.rawgit.com/AaronGullickson/nones_beliefs_analysis/d33c61c1/analysis.html). 
+This repository contains the data and code for the analysis in the paper entitled "The Diverging Beliefs and Practices of the Religiously Affiliated and Unaffiliated in the United States" which is [now published in *Sociological Science*](https://dx.doi.org/10.15195/v5.a16). The main analytical results can be found in the `analysis.html` file. This file can be downloaded and opened in any browser or it can be viewed online [here](https://htmlpreview.github.io/?https://raw.githubusercontent.com/AaronGullickson/nones_beliefs_analysis/master/analysis.html). 
 
 The data here come from the General Social Survey. The raw data from a GSS extract through GSS Explorer are included in the `input` directory. The `output` directory contains the analytical data used in the analysis after recoding/cleaning of the raw data. 
 
